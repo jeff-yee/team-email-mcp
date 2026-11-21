@@ -4,7 +4,9 @@ Team packaging of email-agent-mcp 0.3.2 (`@usejunior` 0.3.5) with local patches 
 
 This repository holds the patches against upstream, the build and prune scripts, and offline tests. It does not vendor `node_modules`, tokens, MSAL caches, or live install trees.
 
-## Installing the email tool
+## Installing the email tool (releases: coming soon)
+
+**Coming soon:** no release has been published from this repository yet, so the tags, package names and sha256 values below (`<LINUX_TAG>`, `<TAG>`, `<PKG>`, `<PIN>` and similar) are placeholders. Until a release exists, build a package yourself (see [Building](#building-maintainers)).
 
 Teammates install the release package, not this repository. Two routes exist. The live Linux-only release (tag, asset and sha256 shown as `<LINUX_TAG>`, `<LINUX_PKG>` and `<LINUX_PIN>`, from its release notes) is installed with `bash install.sh`. Packages built from this tree run on Windows, macOS and Linux with Node 20 or newer (installed with `node install.mjs`); that cross-platform release does not exist yet, so its tag, asset name and sha256 appear in the guide as `<TAG>`, `<PKG>` and `<PIN>`. The repo admin hands the package out through OneDrive (the release tgz and its `.sha256`), and the installer checks it against the pinned sha256.
 
@@ -19,6 +21,7 @@ Installing does not need GitHub access. If you have no package or a hash check f
 ## Building (maintainers)
 
 - Build config: copy `team-build.config.example.json` to `team-build.config.json` (untracked) and fill in your tenant id and team app client id, or point `TEAM_BUILD_CONFIG` at such a file. See [docs/TENANT-SETUP.md](docs/TENANT-SETUP.md). Without it the build refuses (`TEAM_BUILD_CONFIG_MISSING`); there is no built-in tenant or app.
+- Trying the build without a tenant: `TEAM_BUILD_CONFIG=tests/fixtures/team-build.config.test.json tools/make-build-tree.sh <emptyDir>` fills in the dummy test tenant and client id that CI uses. Run it from the repository root (`TEAM_BUILD_CONFIG` is resolved against the current directory); its `npm ci` needs access to the npm registry or a warm npm cache. A package built this way cannot sign in to any tenant; use it only to try the build and run the offline checks.
 - Patched tree: `tools/make-build-tree.sh <emptyDir>`
 - Build: `build.sh` (set `BUILD_DIR` if the patched tree is not `./build`)
 - Offline checks: `tools/run-checks.sh <installDir> <label>` and `node tests/offline-test.mjs <installDir>`
