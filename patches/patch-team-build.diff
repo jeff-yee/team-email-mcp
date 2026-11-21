@@ -1,0 +1,941 @@
+Only in build: TEAM-BUILD.json
+diff -ru build-orig-ref/node_modules/@usejunior/email-core/dist/index.js build/node_modules/@usejunior/email-core/dist/index.js
+--- build-orig-ref/node_modules/@usejunior/email-core/dist/index.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/email-core/dist/index.js	2026-11-16 17:00:00.000000000 -0700
+@@ -1,6 +1,6 @@
+ // @usejunior/email-core — Actions, content engine, security, and provider interfaces
+ export { EMAIL_ACTIONS } from './actions/registry.js';
+-export { EMAIL_SCOPE_PROFILES, EMAIL_SCOPE_PROFILE_ENV, filterActionsForProfile, getEmailScopeProfile, isActionAllowedForProfile, profileBlockedActionError, } from './scope-profile.js';
++export { EMAIL_SCOPE_PROFILES, EMAIL_SCOPE_PROFILE_ENV, TEAM_DEFAULT_SCOPE_PROFILE, DRAFT_ALLOWED_ACTIONS, filterActionsForProfile, getEmailScopeProfile, isActionAllowedForProfile, profileBlockedActionError, } from './scope-profile.js';
+ export { ProviderError, AttachmentNotSupportedError, AttachmentNotFoundError, MessageNotFoundError } from './providers/provider.js';
+ export { isProviderError, normalizeProviderError, classifyHttpStatus, classifyTransportError, parseRetryAfter, isRetryable, withRetry, SEND_STATUS_UNKNOWN, } from './providers/provider.js';
+ export { isAllowedSender, loadReceiveAllowlist, getReceiveAllowlistPath, checkDeletePolicy, getDeletePolicyFromEnv, } from './security/receive-allowlist.js';
+diff -ru build-orig-ref/node_modules/@usejunior/email-core/dist/scope-profile.js build/node_modules/@usejunior/email-core/dist/scope-profile.js
+--- build-orig-ref/node_modules/@usejunior/email-core/dist/scope-profile.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/email-core/dist/scope-profile.js	2026-11-16 17:00:00.000000000 -0700
+@@ -1,4 +1,8 @@
+-export const EMAIL_SCOPE_PROFILES = ['full', 'observe'];
++// TEAM BUILD (2026-11-17): adds the 'draft' profile and makes it the
++// default. 'full' (Mail.Send, MailboxSettings.ReadWrite, send/delete/rule tools)
++// is refused in this build; only 'draft' and 'observe' can be selected.
++export const EMAIL_SCOPE_PROFILES = ['draft', 'observe'];
++export const TEAM_DEFAULT_SCOPE_PROFILE = 'draft';
+ export const EMAIL_SCOPE_PROFILE_ENV = 'EMAIL_AGENT_MCP_SCOPE_PROFILE';
+ // These actions change only local connection metadata. They must remain
+ // available in observe mode so an installation can configure and repair its
+@@ -10,11 +14,38 @@
+ ]);
+ export function getEmailScopeProfile(value = process.env[EMAIL_SCOPE_PROFILE_ENV]) {
+     if (value === undefined || value.trim() === '')
+-        return 'full';
+-    if (value === 'full' || value === 'observe')
+-        return value;
+-    throw new Error(`Invalid ${EMAIL_SCOPE_PROFILE_ENV} value "${value}". Expected "full" or "observe".`);
++        return TEAM_DEFAULT_SCOPE_PROFILE;
++    const v = value.trim();
++    if (v === 'draft' || v === 'observe')
++        return v;
++    if (v === 'full')
++        throw new Error(`${EMAIL_SCOPE_PROFILE_ENV}=full is not available in the team build (no send, delete, rules or mailbox settings). Use "draft" (default) or "observe".`);
++    throw new Error(`Invalid ${EMAIL_SCOPE_PROFILE_ENV} value "${value}". Expected "draft" or "observe".`);
+ }
++// TEAM BUILD: explicit ALLOWLIST for the draft profile (anything not listed —
++// including any tool a future upstream adds — is hidden and refused).
++// Own mailbox only for writes; shared mailboxes are further limited to reads by
++// SHARED_MAILBOX_READONLY_TOOLS in provider-microsoft.
++export const DRAFT_ALLOWED_ACTIONS = Object.freeze(new Set([
++    'list_emails',
++    'read_email',
++    'search_emails',
++    'get_thread',
++    'list_attachments',
++    'download_attachment',
++    'download_message',
++    'list_folders',
++    'create_draft',
++    'update_draft',
++    'mark_read',
++    'flag_email',
++    'label_email',
++    'move_to_folder',
++    'get_mailbox_status',
++    'list_mailboxes',
++    'configure_mailbox',
++    'remove_mailbox',
++]));
+ // Read-only actions that observe must still hide, because the Graph scopes the
+ // observe profile requests cannot satisfy them. list_inbox_rules reads
+ // /mailFolders/inbox/messageRules, which Graph gates behind MailboxSettings —
+@@ -24,8 +55,10 @@
+     'list_inbox_rules',
+ ]);
+ export function isActionAllowedForProfile(action, profile) {
+-    if (profile === 'full')
+-        return true;
++    if (profile === 'draft')
++        return DRAFT_ALLOWED_ACTIONS.has(action.name);
++    if (profile !== 'observe')
++        return false; // TEAM BUILD: unknown / 'full' => nothing
+     if (OBSERVE_EXCLUDED_ACTIONS.has(action.name))
+         return false;
+     return action.annotations.readOnlyHint
+@@ -34,7 +67,11 @@
+ export function filterActionsForProfile(actions, profile) {
+     return actions.filter(action => isActionAllowedForProfile(action, profile));
+ }
+-export function profileBlockedActionError(actionName) {
++export function profileBlockedActionError(actionName, profile = getEmailScopeProfile()) {
++    if (profile === 'draft') {
++        return new Error(`Tool "${actionName}" is unavailable in the team build ("draft" scope profile: read, own-mailbox drafts and triage only; `
++            + 'no sending, deleting, inbox rules or mailbox settings). Drafts must be sent by a person from Outlook.');
++    }
+     // Two different reasons a tool can be missing under observe, and telling an
+     // agent the wrong one sends it down the wrong recovery path. A read-only tool
+     // excluded for scope reasons is not "a write tool".
+@@ -42,6 +79,6 @@
+         ? 'because the "observe" profile does not request the Microsoft Graph scope it requires'
+         : 'because it can modify mailbox data';
+     return new Error(`Tool "${actionName}" is unavailable under the "observe" scope profile ${reason}. `
+-        + `Set ${EMAIL_SCOPE_PROFILE_ENV}=full and re-authenticate to enable it.`);
++        + `Use the default "draft" profile for drafting; the "full" profile is not available in this build.`);
+ }
+ //# sourceMappingURL=scope-profile.js.map
+\ No newline at end of file
+diff -ru build-orig-ref/node_modules/@usejunior/email-mcp/dist/cli.js build/node_modules/@usejunior/email-mcp/dist/cli.js
+--- build-orig-ref/node_modules/@usejunior/email-mcp/dist/cli.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/email-mcp/dist/cli.js	2026-11-16 17:00:00.000000000 -0700
+@@ -169,6 +169,8 @@
+     }
+ }
+ async function addEmailToSendAllowlist(emailAddress) {
++    // TEAM BUILD: drafts only. Never write the send allowlist; install.sh leaves it empty.
++    return;
+     // Keep CLI writes aligned with the runtime/server path resolution so
+     // configure-time edits land in the file the MCP server will actually watch.
+     const allowlistPath = await getEffectiveSendAllowlistPath();
+@@ -508,7 +510,7 @@
+     if (opts.callTool === 'delete_email') {
+         console.error(deletePolicy
+             ? `[email-agent-mcp] Delete policy: enabled (hard_delete=${deletePolicy.hardDeleteAllowed})`
+-            : '[email-agent-mcp] Delete policy: disabled (set AGENT_EMAIL_DELETE_ENABLED=true to enable)');
++            : '[email-agent-mcp] Delete policy: disabled');
+     }
+     const state = createLazyProviderState();
+     const actions = await buildLazyActions(state, getSendAllowlist, getDeletePolicy);
+@@ -620,7 +622,7 @@
+     console.error(`[email-agent-mcp] Watching mailboxes, wake URL: ${wakeUrl}`);
+     console.error(`[email-agent-mcp] Poll interval: ${pollIntervalSec}s`);
+     // Dynamic imports to avoid loading heavy dependencies at parse time
+-    const { DelegatedAuthManager, RealGraphApiClient, GraphEmailProvider, listConfiguredMailboxesWithMetadata, toFilesystemSafeKey, isAuthError, } = await import('@usejunior/provider-microsoft');
++    const { DelegatedAuthManager, TeamOwnMailboxGraphClient, GraphEmailProvider, listConfiguredMailboxesWithMetadata, toFilesystemSafeKey, isAuthError, } = await import('@usejunior/provider-microsoft');
+     const { isAllowedSender, loadReceiveAllowlist, getReceiveAllowlistPath, WatchedAllowlist, } = await import('@usejunior/email-core');
+     const { buildWakePayload, sendWake, isProcessed, markProcessed, loadDeltaState, saveDeltaState, acquireLock, releaseLock, releaseAllLocks, } = await import('./watcher.js');
+     // Load receive allowlist with hot-reload
+@@ -672,7 +674,7 @@
+             const auth = new DelegatedAuthManager({ mode: 'delegated', clientId: metadata.clientId }, metadata.mailboxName);
+             await auth.reconnect();
+             // Create Graph client and provider (with auth-aware retry on 401)
+-            const graphClient = new RealGraphApiClient(() => auth.getAccessToken(), () => auth.tryReconnect());
++            const graphClient = new TeamOwnMailboxGraphClient(() => auth.getAccessToken(), () => auth.tryReconnect(), emailAddress, 'observe'); // TEAM BUILD: watcher is read-only
+             const provider = new GraphEmailProvider(graphClient);
+             // Load last checked timestamp or start from now
+             const savedState = await loadDeltaState(safeKey);
+@@ -964,7 +966,7 @@
+ async function finalizeGmailMailbox(emailAddress, toFilesystemSafeKey) {
+     try {
+         await addEmailToSendAllowlist(emailAddress);
+-        console.error(`[email-agent-mcp] Send allowlist: ${emailAddress} (outbound email enabled to this address)`);
++        console.error('[email-agent-mcp] Drafts only; sending is disabled in this build');
+     }
+     catch (allowlistErr) {
+         console.error(`[email-agent-mcp] WARNING: Could not update send allowlist: ${allowlistErr instanceof Error ? allowlistErr.message : allowlistErr}`);
+@@ -1012,6 +1014,11 @@
+         console.error(`[email-agent-mcp] Inferred provider "${inferredProvider}" from mailbox domain "${domain}". Pass --provider to override.`);
+     }
+     if (provider === 'gmail') {
++        // TEAM BUILD: Microsoft 365 only; the Gmail path has no draft-profile request guard.
++        console.error('[email-agent-mcp] The team build supports --provider microsoft only.');
++        return 1;
++    }
++    if (provider === 'gmail-upstream-disabled') {
+         try {
+             return await runGmailConfigure(opts);
+         }
+@@ -1021,13 +1028,26 @@
+         }
+     }
+     if (provider !== 'microsoft') {
+-        console.error(`[email-agent-mcp] Provider "${provider}" not yet supported for configure. Use --provider microsoft or --provider gmail`);
++        console.error(`[email-agent-mcp] Provider "${provider}" not yet supported for configure. Use --provider microsoft`);
++        return 1;
++    }
++    // TEAM BUILD: client ID from flag, env var, or this mailbox's saved metadata.
++    // Never the vendor ("Junior local app") default — refuse instead.
++    let savedClientId;
++    try {
++        const { loadMailboxMetadata } = await import('@usejunior/provider-microsoft');
++        savedClientId = (await loadMailboxMetadata(mailboxName))?.clientId;
++    }
++    catch { /* no saved metadata */ }
++    let clientId;
++    try {
++        const { assertTeamClientId } = await import('@usejunior/provider-microsoft');
++        clientId = assertTeamClientId(opts.clientId ?? process.env['AGENT_EMAIL_CLIENT_ID'] ?? savedClientId, `configure "${mailboxName}"`);
++    }
++    catch (err) {
++        console.error(`\n❌ ${err instanceof Error ? err.message : err}`);
+         return 1;
+     }
+-    // Get client ID from flag, env var, or use Junior local app default
+-    const clientId = opts.clientId
+-        ?? process.env['AGENT_EMAIL_CLIENT_ID']
+-        ?? 'c4f91d3e-d2d9-4f8b-826f-6a3c19280241'; // Junior local app
+     console.error(`[email-agent-mcp] Configuring mailbox "${mailboxName}" with Microsoft Graph`);
+     console.error(`[email-agent-mcp] Client ID: ${clientId}`);
+     console.error('');
+@@ -1081,7 +1101,7 @@
+                     // Auto-add the authenticated email to the send allowlist
+                     try {
+                         await addEmailToSendAllowlist(emailAddress);
+-                        console.error(`[email-agent-mcp] Send allowlist: ${emailAddress} (outbound email enabled to this address)`);
++                        console.error('[email-agent-mcp] Drafts only; sending is disabled in this build');
+                     }
+                     catch (allowlistErr) {
+                         console.error(`[email-agent-mcp] WARNING: Could not update send allowlist: ${allowlistErr instanceof Error ? allowlistErr.message : allowlistErr}`);
+@@ -1169,6 +1189,12 @@
+     return 0;
+ }
+ async function runToken(opts) {
++    // TEAM BUILD: printing a raw Graph bearer token would bypass every guard in
++    // this build (tool filter, own-mailbox guard, shared-mailbox read-only guard).
++    process.stderr.write('Error: the "token" command is disabled in the team build.\n');
++    return 1;
++}
++async function runTokenDisabledUpstream(opts) {
+     const { DelegatedAuthManager, listConfiguredMailboxesWithMetadata, loadMailboxMetadata, } = await import('@usejunior/provider-microsoft');
+     let metadata;
+     if (opts.mailbox) {
+@@ -1229,7 +1255,6 @@
+   email-agent-mcp setup        Configure a mailbox (interactive)
+   email-agent-mcp configure    Configure a mailbox (interactive, alias for setup)
+   email-agent-mcp status       Show account + connection health
+-  email-agent-mcp token        Print a Graph API bearer token to stdout
+   email-agent-mcp serve        Force MCP server mode
+   email-agent-mcp call <tool>  Invoke a single MCP tool one-shot (no long-lived server)
+                               See \`call\` examples below
+@@ -1243,9 +1268,8 @@
+   --nemoclaw             NemoClaw egress bootstrap
+   --log-level <level>    Log level (debug, info, warn, error)
+   --mailbox <name>       Mailbox alias or email address (required if multiple configured)
+-  --provider <name>      Auth provider (microsoft, gmail)
++  --provider <name>      Auth provider (microsoft)
+   --client-id <id>       OAuth client ID override
+-  --client-secret <val>  OAuth client secret override (used for Gmail configure)
+ 
+ CALL OPTIONS (used with \`call <tool>\`):
+   --args '<json>'        Inline JSON args for the tool
+diff -ru build-orig-ref/node_modules/@usejunior/email-mcp/dist/server.js build/node_modules/@usejunior/email-mcp/dist/server.js
+--- build-orig-ref/node_modules/@usejunior/email-mcp/dist/server.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/email-mcp/dist/server.js	2026-11-17 20:23:53.361752686 -0700
+@@ -15,8 +15,7 @@
+ }
+ const require = createRequire(import.meta.url);
+ const { version: PACKAGE_VERSION } = require('../package.json');
+-const MANUAL_GMAIL_SETUP_HINT = 'or add a Gmail mailbox JSON file under ~/.email-agent-mcp/tokens/. See packages/provider-gmail/README.md';
+-const NO_MAILBOX_CONFIGURED_MESSAGE = `No mailbox configured — run: email-agent-mcp configure --mailbox <name> --provider microsoft ${MANUAL_GMAIL_SETUP_HINT}`;
++const NO_MAILBOX_CONFIGURED_MESSAGE = 'No mailbox configured — run: email-agent-mcp configure --mailbox <name> --provider microsoft';
+ const STATE_AWARE_ACTION_NAMES = new Set([
+     'list_emails',
+     'read_email',
+@@ -187,7 +186,7 @@
+     const action = actions.find(a => a.name === toolName);
+     if (!action) {
+         if (actions.profileBlockedActionNames?.has(toolName)) {
+-            throw profileBlockedActionError(toolName);
++            throw profileBlockedActionError(toolName, getEmailScopeProfile());
+         }
+         throw new Error(`Unknown tool: ${toolName}`);
+     }
+@@ -389,7 +388,7 @@
+  */
+ export async function initProvider(state) {
+     try {
+-        const [{ listConfiguredMailboxesWithMetadata, DelegatedAuthManager, RealGraphApiClient, GraphEmailProvider, ReadOnlySharedMailboxGraphClient, loadSharedMailboxConfig, assertToolAllowedForSharedMailbox, SHARED_MAILBOX_SCOPES }, { listConfiguredGmailMailboxes, GmailAuthManager, GmailEmailProvider, GoogleapisGmailClient, formatGmailAuthError, },] = await Promise.all([
++        const [{ listConfiguredMailboxesWithMetadata, DelegatedAuthManager, RealGraphApiClient, TeamOwnMailboxGraphClient, GraphEmailProvider, ReadOnlySharedMailboxGraphClient, loadSharedMailboxConfig, assertToolAllowedForSharedMailbox, SHARED_MAILBOX_SCOPES }, { listConfiguredGmailMailboxes, GmailAuthManager, GmailEmailProvider, GoogleapisGmailClient, formatGmailAuthError, },] = await Promise.all([
+             import('@usejunior/provider-microsoft'),
+             import('@usejunior/provider-gmail'),
+         ]);
+@@ -411,7 +410,8 @@
+             try {
+                 const auth = new DelegatedAuthManager({ mode: 'delegated', clientId: metadata.clientId, tenantId: metadata.tenantId }, metadata.mailboxName);
+                 await auth.reconnect();
+-                const client = new RealGraphApiClient(() => auth.getAccessToken(), () => auth.tryReconnect());
++                // TEAM BUILD: own mailbox goes through the draft/observe request guard.
++                const client = new TeamOwnMailboxGraphClient(() => auth.getAccessToken(), () => auth.tryReconnect(), displayName, getEmailScopeProfile());
+                 const provider = new GraphEmailProvider(client);
+                 microsoftAuthByName.set(normalizeMailboxKey(metadata.mailboxName), auth); // LOCAL PATCH
+                 if (metadata.emailAddress)
+@@ -506,7 +506,10 @@
+         const sharedConnected = [];
+         try {
+             state.assertToolAllowedForSharedMailbox = assertToolAllowedForSharedMailbox;
+-            for (const shared of loadSharedMailboxConfig()) {
++            // Include own mailboxes whose sign-in failed, so a shared entry for that
++            // address (via another connected mailbox) is not also registered as shared.
++            const ownAddresses = [...connectedMailboxes, ...failedMailboxes].flatMap(m => [m.emailAddress, m.name]).filter(Boolean);
++            for (const shared of loadSharedMailboxConfig(ownAddresses)) {
+                 const ownerAuth = microsoftAuthByName.get(normalizeMailboxKey(shared.viaSignedInMailbox));
+                 const base = {
+                     name: shared.name,
+@@ -516,6 +519,12 @@
+                     isDefault: false,
+                     readOnlyShared: true,
+                 };
++                // LOCAL PATCH: skip the signed-in mailbox before any error registration,
++                // even when viaSignedInMailbox is empty or names a mailbox that is not connected.
++                if (ownAddresses.some(a => normalizeMailboxKey(a) === normalizeMailboxKey(shared.emailAddress))) {
++                    console.error(`[email-agent-mcp] Ignoring shared mailbox "${shared.emailAddress}": it is already the signed-in mailbox; own mailboxes stay on /me and are not registered as read-only shared targets`);
++                    continue;
++                }
+                 if (!ownerAuth) {
+                     failedMailboxes.push({ ...base, provider: null, auth: null, status: 'error', error: `Shared mailbox "${shared.name}": signed-in mailbox "${shared.viaSignedInMailbox}" is not connected` });
+                     continue;
+@@ -623,6 +626,10 @@
+                 // structured-output validation. Throw into createMcpProtocolServer's
+                 // protocol-level `isError` path instead; the code remains visible in the
+                 // text error for both MCP and direct CLI callers.
++                // TEAM BUILD: a local guard refusal is a refusal, not an outage. Keep its own
++                // code in the message and do not label it PROVIDER_UNAVAILABLE.
++                if (err && (err.code === 'TEAM_BUILD_REFUSED' || err.code === 'SHARED_MAILBOX_READ_ONLY'))
++                    throw err;
+                 const detail = err instanceof Error ? err.message : String(err);
+                 throw new Error(`PROVIDER_UNAVAILABLE: ${detail}`, { cause: err });
+             }
+@@ -867,6 +876,17 @@
+                         if (!currentAllowlist || currentAllowlist.entries.length === 0) {
+                             warnings.push('Send allowlist not configured — all outbound email is disabled. Run: email-agent-mcp configure');
+                         }
++                        // LOCAL PATCH: configured shared mailboxes are not probed at init.
++                        if (mailbox.readOnlyShared) {
++                            warnings.push('Configured shared mailbox; Exchange access has not been probed. Status is unverified until a read succeeds or Graph returns 403/404.');
++                            return {
++                                name: mailbox.displayName,
++                                provider: mailbox.providerType,
++                                status: 'unverified',
++                                isDefault: mailbox.isDefault,
++                                warnings,
++                            };
++                        }
+                         return {
+                             name: mailbox.displayName,
+                             provider: mailbox.providerType,
+@@ -891,7 +911,7 @@
+                     emailAddress: z.string().nullable(),
+                     provider: z.string(),
+                     isDefault: z.boolean(),
+-                    status: z.enum(['connected', 'error']),
++                    status: z.enum(['connected', 'error', 'unverified']),
+                     error: z.string().optional(),
+                 })),
+             }),
+@@ -913,7 +933,8 @@
+                         emailAddress: mailbox.emailAddress ?? null,
+                         provider: mailbox.providerType,
+                         isDefault: mailbox.isDefault,
+-                        status: mailbox.status,
++                        // LOCAL PATCH: configured shared entries are listed but not probed, so do not claim "connected".
++                        status: mailbox.readOnlyShared && mailbox.status === 'connected' ? 'unverified' : mailbox.status,
+                         ...(mailbox.status === 'error' && mailbox.error ? { error: mailbox.error } : {}),
+                     })),
+                 };
+@@ -925,7 +946,7 @@
+     ];
+     const profile = getEmailScopeProfile();
+     const filtered = filterActionsForProfile(actions, profile);
+-    if (profile === 'observe') {
++    if (profile !== 'full') { // TEAM BUILD: draft + observe both record blocked names
+         const exposedNames = new Set(filtered.map(action => action.name));
+         Object.defineProperty(filtered, 'profileBlockedActionNames', {
+             value: new Set(actions.filter(action => !exposedNames.has(action.name)).map(action => action.name)),
+@@ -958,7 +979,7 @@
+     const getDeletePolicy = () => deletePolicy;
+     console.error(deletePolicy
+         ? `[email-agent-mcp] Delete policy: enabled (hard_delete=${deletePolicy.hardDeleteAllowed})`
+-        : '[email-agent-mcp] Delete policy: disabled (set AGENT_EMAIL_DELETE_ENABLED=true to enable)');
++        : '[email-agent-mcp] Delete policy: disabled');
+     // Build tool registry with lazy provider state (no auth yet).
+     const state = createLazyProviderState();
+     const actions = await buildLazyActions(state, getSendAllowlist, getDeletePolicy);
+diff -ru build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/auth.js build/node_modules/@usejunior/provider-microsoft/dist/auth.js
+--- build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/auth.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/provider-microsoft/dist/auth.js	2026-11-16 17:00:00.000000000 -0700
+@@ -7,6 +7,7 @@
+ import { join, dirname } from 'node:path';
+ import { homedir } from 'node:os';
+ import { GraphApiError } from './email-graph-provider.js';
++import { assertTeamClientId , TEAM_TENANT_ID } from './team-build-config.js';
+ // Enable MSAL persistent cache (OS keychain on macOS, DPAPI on Windows, libsecret on Linux)
+ useIdentityPlugin(cachePersistencePlugin);
+ export const GRAPH_SCOPES = ['Mail.Read', 'Mail.ReadWrite', 'Mail.Send', 'MailboxSettings.ReadWrite', 'User.Read', 'offline_access'];
+@@ -33,6 +34,8 @@
+ export const GRAPH_SCOPES_BY_PROFILE = {
+     full: GRAPH_SCOPES,
+     observe: ['Mail.Read', 'User.Read', 'offline_access'],
++    // TEAM BUILD: read + own-mailbox drafting + read-only shared mailboxes. No Mail.Send, no MailboxSettings.*.
++    draft: ['User.Read', 'offline_access', 'Mail.ReadWrite', 'Mail.Read.Shared'],
+ };
+ export const GRAPH_SCOPES_FULL_BY_PROFILE = {
+     full: GRAPH_SCOPES_FULL,
+@@ -41,6 +44,13 @@
+         'https://graph.microsoft.com/User.Read',
+         'offline_access',
+     ],
++    // TEAM BUILD draft profile (see GRAPH_SCOPES_BY_PROFILE.draft).
++    draft: [
++        'https://graph.microsoft.com/User.Read',
++        'offline_access',
++        'https://graph.microsoft.com/Mail.ReadWrite',
++        'https://graph.microsoft.com/Mail.Read.Shared',
++    ],
+ };
+ const TOKEN_EXPIRY_BUFFER_MS = 10 * 60 * 1000; // 10 minutes
+ /**
+@@ -82,9 +92,15 @@
+     _tokenExpiresAt = null;
+     _reconnectPromise = null;
+     constructor(config, mailboxName = 'default') {
++        // TEAM BUILD: single chokepoint — no delegated auth without an explicit, non-vendor client id.
++        assertTeamClientId(config?.clientId, `mailbox "${mailboxName}"`);
++        if ((config?.scopeProfile ?? getEmailScopeProfile()) === 'full')
++            throw new Error('TEAM BUILD: the "full" scope profile (Mail.Send, MailboxSettings.ReadWrite) is not available in this build');
+         this.config = config;
+         this.mailboxName = mailboxName;
+         this.scopes = GRAPH_SCOPES_FULL_BY_PROFILE[config.scopeProfile ?? getEmailScopeProfile()];
++        if (!this.scopes)
++            throw new Error(`TEAM BUILD: no Graph scopes defined for scope profile "${config.scopeProfile ?? getEmailScopeProfile()}"`);
+     }
+     /** Set the email address for this mailbox (called after profile fetch during configure). */
+     setEmailAddress(email) {
+@@ -130,6 +146,23 @@
+         this._needsReauth = false;
+         // Persist metadata (not the tokens — those are in OS keychain via MSAL)
+         await this.saveMetadata();
++        // TEAM BUILD: the interactive credential above has no saved record and
++        // automatic sign-in is off, so the silent token check that configure runs
++        // right after sign-in could throw AuthenticationRequiredError ("Automatic
++        // authentication has been disabled") even though sign-in worked. Continue
++        // with the same record-based silent credential the connector uses (see
++        // reconnect()), so configure checks what the connector will actually use.
++        // A genuine silent-token failure still throws, and configure still fails.
++        this.credential = this.createPersistentCredential({
++            clientId: this.config.clientId,
++            tenantId: this.config.tenantId,
++            authenticationRecord: this.authRecord,
++            cacheName: this.cacheName,
++            disableAutomaticAuthentication: true,
++            userPromptCallback: (info) => {
++                console.error(`[email-agent-mcp] Interactive sign-in required: ${info.verificationUri} code ${info.userCode}`);
++            },
++        });
+     }
+     /**
+      * Reconnect from a saved AuthenticationRecord (silent, no user interaction).
+@@ -291,9 +324,10 @@
+         return `${this.getLegacyCacheName()}-${randomUUID()}`;
+     }
+     createPersistentCredential(options) {
++        assertTeamClientId(options?.clientId, `mailbox "${this.mailboxName}" credential`); // TEAM BUILD
+         return new DeviceCodeCredential({
+             clientId: options.clientId,
+-            tenantId: options.tenantId ?? 'organizations',
++            tenantId: TEAM_TENANT_ID, // TEAM BUILD: single-tenant app; always the pinned tenant, a tenant saved in an old config never overrides it
+             authenticationRecord: options.authenticationRecord,
+             disableAutomaticAuthentication: options.disableAutomaticAuthentication ?? false,
+             userPromptCallback: options.userPromptCallback,
+@@ -306,7 +339,7 @@
+     }
+     async saveMetadata() {
+         const path = this.getMetadataPath();
+-        await mkdir(dirname(path), { recursive: true });
++        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+         const metadata = {
+             provider: 'microsoft',
+             authenticationRecord: this.authRecord,
+@@ -317,7 +317,14 @@
+             mailboxName: this.mailboxName,
+             emailAddress: this._emailAddress ?? undefined,
+         };
+-        await writeFile(path, JSON.stringify(metadata, null, 2), 'utf-8');
++        await writeFile(path, JSON.stringify(metadata, null, 2), { encoding: 'utf-8', mode: 0o600 });
++        // TEAM BUILD: tokens/ is owner-only (0700) and the account file 0600 (POSIX). mode: only
++        // applies on create, so also chmod to tighten a dir or file an older run left looser.
++        if (process.platform !== 'win32') {
++            const { chmod } = await import('node:fs/promises');
++            await chmod(dirname(path), 0o700);
++            await chmod(path, 0o600);
++        }
+     }
+     async loadMetadata() {
+         // Use the public loadMailboxMetadata which handles both old-style (name-based)
+diff -ru build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/email-graph-provider.js build/node_modules/@usejunior/provider-microsoft/dist/email-graph-provider.js
+--- build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/email-graph-provider.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/provider-microsoft/dist/email-graph-provider.js	2026-11-17 20:25:22.677758725 -0700
+@@ -347,6 +347,11 @@
+  */
+ function classifyGraphDelivery(err) {
+     const detail = err instanceof Error ? err.message : String(err);
++    // TEAM BUILD: a local guard refusal happens before any request is sent, so it is
++    // never an ambiguous delivery.
++    if (err && (err.code === 'TEAM_BUILD_REFUSED' || err.code === 'SHARED_MAILBOX_READ_ONLY')) {
++        return { code: err.code, recoverable: false, ambiguous: false, detail };
++    }
+     if (err instanceof GraphApiError) {
+         const classified = classifyHttpStatus(err.status, 'delivery', {
+             retryAfter: err.retryAfterSeconds,
+@@ -429,32 +434,40 @@
+     async searchMessages(query, folder, limit, offset) {
+         if (!query || !query.trim())
+             return [];
+-        const params = new URLSearchParams();
+-        params.set('$search', `"${query}"`);
+-        params.set('$top', String(limit ?? 50));
+-        if (offset)
+-            params.set('$skip', String(offset));
++        const take = limit ?? 50;
++        const start = offset ?? 0;
+         const normalizedFolder = folder ? normalizeFolderId(folder) : undefined;
+         const base = normalizedFolder
+             ? `${this.basePath}/mailFolders/${encodeGraphPathId(normalizedFolder)}/messages`
+             : `${this.basePath}/messages`;
++        // Graph rejects $search+$skip (SearchWithSkip). Page with $top and
++        // @odata.nextLink, then slice so the tool can keep its offset interface.
++        const run = async (q) => {
++            const params = new URLSearchParams();
++            params.set('$search', `"${q}"`);
++            params.set('$top', String(Math.min(Math.max(take, 1), 50)));
++            const wanted = start + take;
++            const graphMessages = [];
++            const visited = new Set();
++            let url = `${base}?${params}`;
++            while (url && graphMessages.length < wanted) {
++                if (visited.size >= 100 || visited.has(url))
++                    break;
++                visited.add(url);
++                const response = await this.client.get(url);
++                graphMessages.push(...(response.value ?? []));
++                url = response['@odata.nextLink'] ?? '';
++            }
++            return graphMessages.slice(start, start + take).map(mapGraphMessage);
++        };
+         try {
+-            const response = await this.client.get(`${base}?${params}`);
+-            return (response.value ?? []).map(mapGraphMessage);
++            return await run(query);
+         }
+         catch (err) {
+-            // On HTTP 400 (syntax error), retry with simplified keywords
+             if (err instanceof GraphApiError && err.status === 400) {
+                 const simplified = simplifySearchQuery(query);
+-                if (simplified && simplified !== query) {
+-                    const retryParams = new URLSearchParams();
+-                    retryParams.set('$search', `"${simplified}"`);
+-                    retryParams.set('$top', String(limit ?? 50));
+-                    if (offset)
+-                        retryParams.set('$skip', String(offset));
+-                    const response = await this.client.get(`${base}?${retryParams}`);
+-                    return (response.value ?? []).map(mapGraphMessage);
+-                }
++                if (simplified && simplified !== query)
++                    return await run(simplified);
+             }
+             throw err;
+         }
+diff -ru build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/index.js build/node_modules/@usejunior/provider-microsoft/dist/index.js
+--- build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/index.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/provider-microsoft/dist/index.js	2026-11-17 20:49:44.921857598 -0700
+@@ -2,6 +2,9 @@
+ export { GraphEmailProvider, RealGraphApiClient, GraphApiError } from './email-graph-provider.js';
+ export { DelegatedAuthManager, ClientCredentialsAuthManager, listConfiguredMailboxes, listConfiguredMailboxesWithMetadata, loadMailboxMetadata, toFilesystemSafeKey, getConfigDir, GRAPH_SCOPES, GRAPH_SCOPES_BY_PROFILE, GRAPH_SCOPES_FULL_BY_PROFILE, isAuthError } from './auth.js';
+ // LOCAL PATCH: read-only shared mailbox support
+-export { ReadOnlySharedMailboxGraphClient, SharedMailboxWriteRefusedError, loadSharedMailboxConfig, assertToolAllowedForSharedMailbox, SHARED_MAILBOX_READONLY_ALLOWLIST, SHARED_MAILBOX_SCOPES, SHARED_MAILBOX_READONLY_TOOLS, getSharedMailboxConfigPath, getSharedMailboxGuardLogPath } from './shared-mailbox-readonly.js';
++export { ReadOnlySharedMailboxGraphClient, SharedMailboxRequestRefusedError, SharedMailboxWriteRefusedError, SharedTargetRefusedError, SharedMailboxNotAccessibleError, loadSharedMailboxConfig, assertToolAllowedForSharedMailbox, assertSharedTargetAllowed, classifySharedTarget, isStrictSharedTargetAddress, SHARED_MAILBOX_SCOPES, SHARED_MAILBOX_READONLY_TOOLS, getSharedMailboxConfigPath, getSharedMailboxGuardLogPath } from './shared-mailbox-readonly.js';
++// TEAM BUILD: own-mailbox request guard + build-time constants
++export { TeamOwnMailboxGraphClient, OwnMailboxRequestRefusedError, classifyOwnMailboxRequest } from './own-mailbox-guard.js';
++export { TEAM_BUILD_ID, SHARED_TARGET_POLICY, getSharedTargetPolicy, TEAM_FORBIDDEN_CLIENT_IDS, assertTeamClientId, TeamClientIdRequiredError } from './team-build-config.js';
+ export { handleValidationToken, isDuplicateNotification, checkSubscriptionExists, healthCheckEndpoint, createInboxSubscription, } from './subscriptions.js';
+ //# sourceMappingURL=index.js.map
+\ No newline at end of file
+diff -ru build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js build/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js
+--- build-orig-ref/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js	2026-11-17 21:44:44.503045737 -0700
+@@ -1,4 +1,4 @@
+-// LOCAL PATCH (2026-10-26) — read-only delegated access to a shared mailbox.
++// LOCAL PATCH (2026-10-26; team build 2026-11-17) — read-only delegated access to a shared mailbox.
+ // Not part of upstream email-agent-mcp. See the team-email-mcp docs/.
+ //
+ // A shared-mailbox entry reuses an already signed-in account's delegated token
+@@ -6,12 +6,15 @@
+ // Every Graph call for it goes through ReadOnlySharedMailboxGraphClient, which is
+ // the single chokepoint: any non-GET method, or any URL outside the pinned
+ // mailbox, is refused locally BEFORE a token is fetched or a request is sent.
++//
++// Address control is Exchange + Graph, not a local allowlist. Writes to any
++// target other than the signed-in user's own mailbox stay refused under both
++// sharedTargetPolicy values ('exchange' and 'shared-mailbox-only').
+ import { appendFileSync, readFileSync } from 'node:fs';
+ import { join } from 'node:path';
+ import { homedir } from 'node:os';
+-import { RealGraphApiClient } from './email-graph-provider.js';
+-/** Hard-coded: the only shared mailboxes this patch will ever open. */
+-export const SHARED_MAILBOX_READONLY_ALLOWLIST = Object.freeze(['support@example.com']);
++import { RealGraphApiClient, GraphApiError } from './email-graph-provider.js';
++import { getSharedTargetPolicy } from './team-build-config.js';
+ /** Delegated scope requested for shared-mailbox tokens (owner@'s own scopes are untouched). */
+ export const SHARED_MAILBOX_SCOPES = Object.freeze(['https://graph.microsoft.com/Mail.Read.Shared']);
+ /** MCP tools that may target a read-only shared mailbox. Everything else is refused. */
+@@ -36,13 +39,142 @@
+ export function getSharedMailboxGuardLogPath() {
+     return join(homeDir(), 'shared-mailbox-guard.log');
+ }
+-export class SharedMailboxWriteRefusedError extends Error {
++export class SharedMailboxRequestRefusedError extends Error {
+     constructor(detail) {
+         super(`SHARED_MAILBOX_READ_ONLY: ${detail}`);
+-        this.name = 'SharedMailboxWriteRefusedError';
++        this.name = 'SharedMailboxRequestRefusedError';
+         this.code = 'SHARED_MAILBOX_READ_ONLY';
+     }
+ }
++export class SharedMailboxWriteRefusedError extends SharedMailboxRequestRefusedError {
++    constructor(detail) {
++        super(detail);
++        this.name = 'SharedMailboxWriteRefusedError';
++    }
++}
++export class SharedTargetRefusedError extends Error {
++    constructor(detail) {
++        super(`SHARED_TARGET_REFUSED: ${detail}`);
++        this.name = 'SharedTargetRefusedError';
++        this.code = 'SHARED_TARGET_REFUSED';
++    }
++}
++/** Thrown when Graph 404 means the mailbox itself is not accessible, not a missing item. */
++export class SharedMailboxNotAccessibleError extends Error {
++    constructor(email, status, body) {
++        super(`Shared mailbox "${email}" is not accessible (${status}): ${String(body ?? '').slice(0, 200)}`);
++        this.name = 'SharedMailboxNotAccessibleError';
++        this.code = 'SHARED_MAILBOX_NOT_ACCESSIBLE';
++        this.status = status;
++        this.body = body;
++    }
++}
++const MAILBOX_LEVEL_404_CODES = new Set([
++    'ErrorInvalidUser',
++    'ErrorNonExistentMailbox',
++    'MailboxNotEnabledForRESTAPI',
++    'ErrorInvalidUserPrincipalName',
++]);
++function graphErrorCode(err) {
++    const text = `${err && err.body ? err.body : ''} ${err && err.message ? err.message : ''}`;
++    const m = /"code"\s*:\s*"([^"]+)"/.exec(text);
++    return m ? m[1] : '';
++}
++function graphErrorMessage(err) {
++    const text = `${err && err.body ? err.body : ''} ${err && err.message ? err.message : ''}`;
++    const m = /"message"\s*:\s*"([^"]*)"/.exec(text);
++    return m ? m[1] : text;
++}
++function isMailboxLevelItemNotFound(err) {
++    if (graphErrorCode(err) !== 'ErrorItemNotFound')
++        return false;
++    const msg = graphErrorMessage(err);
++    // Folder-root / mailbox-store 404s on a configured shared mailbox (live
++    // check 8): "Default folder Inbox not found", "Default folder Root not found",
++    // or a store-ID-type message. A missing item stays "not found in the store".
++    if (/Default folder\s+.+\s+not found/i.test(msg))
++        return true;
++    if (/store ID/i.test(msg))
++        return true;
++    return false;
++}
++function rethrowMailboxLevel404(err, emailAddress) {
++    if (err instanceof GraphApiError && err.status === 404
++        && (MAILBOX_LEVEL_404_CODES.has(graphErrorCode(err)) || isMailboxLevelItemNotFound(err)))
++        throw new SharedMailboxNotAccessibleError(emailAddress, err.status, err.body);
++    throw err;
++}
++/**
++ * Classify a target address as a real Exchange shared mailbox, a user/personal
++ * mailbox, or unknown. With the current delegated scopes (User.Read,
++ * offline_access, Mail.ReadWrite, Mail.Read.Shared) Graph does not expose a
++ * field we can use, so this always returns 'unknown'. Hook reserved for
++ * mailboxSettings/userPurpose (needs MailboxSettings.Read; delegated only
++ * covers the signed-in user, so other mailboxes typically need application
++ * MailboxSettings.Read) if shared-mailbox-only is selected and a scope is added.
++ *
++ * Returns: 'shared-mailbox' | 'user-mailbox' | 'unknown'
++ */
++export function classifySharedTarget(_address, _opts = {}) {
++    return 'unknown';
++}
++/**
++ * The single policy gate for opening a non-own mailbox for read.
++ * - 'exchange': validate the address, then pass the read through to Graph.
++ * - 'shared-mailbox-only': only allow a target classifySharedTarget proves
++ *   is a shared mailbox. If the classifier returns 'unknown' (today: always)
++ *   or 'user-mailbox', refuse. Never allow by default.
++ */
++/**
++ * Strict SMTP-shaped address for a shared target. Rejects empty values, more
++ * than one @, and any '/', '?', '#', '%', or whitespace (after trim). Caps
++ * the local part at 64 characters and the whole address at 254. This is
++ * tighter than "contains @" so values like "a@b.com/messages" cannot be used
++ * as a mailbox pin.
++ */
++export function isStrictSharedTargetAddress(address) {
++    const normalized = String(address ?? '').trim().toLowerCase();
++    if (!normalized)
++        return false;
++    if (normalized.length > 254)
++        return false;
++    if (/[\/?#%\s]/.test(normalized))
++        return false;
++    const at = normalized.indexOf('@');
++    if (at < 1 || at !== normalized.lastIndexOf('@'))
++        return false;
++    const local = normalized.slice(0, at);
++    const domain = normalized.slice(at + 1);
++    if (local.length > 64)
++        return false;
++    if (!local || !domain || !domain.includes('.'))
++        return false;
++    if (local.startsWith('.') || local.endsWith('.') || local.includes('..'))
++        return false;
++    if (domain.startsWith('.') || domain.endsWith('.') || domain.includes('..')
++        || domain.startsWith('-') || domain.endsWith('-'))
++        return false;
++    if (!/^[a-z0-9._+-]+$/.test(local))
++        return false;
++    if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(domain))
++        return false;
++    return true;
++}
++export function assertSharedTargetAllowed(address, policy = getSharedTargetPolicy()) {
++    const normalized = String(address ?? '').trim().toLowerCase();
++    if (!isStrictSharedTargetAddress(normalized)) {
++        throw new SharedTargetRefusedError('refusing an empty or invalid shared-mailbox address');
++    }
++    if (policy === 'exchange')
++        return normalized;
++    if (policy === 'shared-mailbox-only') {
++        const kind = classifySharedTarget(normalized);
++        if (kind === 'shared-mailbox')
++            return normalized;
++        throw new SharedTargetRefusedError(`policy shared-mailbox-only cannot confirm ${normalized} is a shared mailbox (classifier: ${kind}). Refusing. The current scopes cannot distinguish a shared mailbox from a user mailbox or a folder share.`);
++    }
++    throw new SharedTargetRefusedError(`unknown sharedTargetPolicy "${policy}"`);
++}
+ /** Append a JSON line to the guard log (no tokens, no query strings). Never throws. */
+ export function logSharedMailboxGuard(event) {
+     const line = JSON.stringify({ ts: new Date().toISOString(), ...event });
+@@ -58,8 +190,19 @@
+  * Load ~/.email-agent-mcp/shared-mailboxes.json. Absent file => [] (no behaviour change).
+  * Format: {"mailboxes":[{"name":"support","emailAddress":"support@example.com",
+  *          "viaSignedInMailbox":"owner@example.com","access":"read-only"}]}
++ *
++ * A strict SMTP-shaped address is accepted at this layer under policy
++ * 'exchange'. Graph 403/404 is the access control. Under 'shared-mailbox-only',
++ * entries that cannot be proven to be shared mailboxes are skipped (fail
++ * closed). Entries whose access is not "read-only" are always skipped.
++ * An entry whose emailAddress equals a signed-in (own) mailbox is skipped
++ * so the own mailbox stays on /me (read plus draft) and is not wrapped as a
++ * read-only shared target. The match is case-insensitive and does not depend
++ * on viaSignedInMailbox (empty or disconnected via still skip). Pass the
++ * connected own addresses as ownAddresses; entries whose via equals the
++ * emailAddress are also skipped when that list is empty.
+  */
+-export function loadSharedMailboxConfig() {
++export function loadSharedMailboxConfig(ownAddresses = []) {
+     let raw;
+     try {
+         raw = readFileSync(getSharedMailboxConfigPath(), 'utf-8');
+@@ -69,16 +212,27 @@
+     }
+     const parsed = JSON.parse(raw);
+     const out = [];
++    const policy = getSharedTargetPolicy();
+     for (const entry of parsed?.mailboxes ?? []) {
+         const emailAddress = String(entry.emailAddress ?? '').trim().toLowerCase();
+-        if (!SHARED_MAILBOX_READONLY_ALLOWLIST.includes(emailAddress)) {
+-            console.error(`[email-agent-mcp] Ignoring shared mailbox "${emailAddress}": not in the hard-coded allowlist`);
++        try {
++            assertSharedTargetAllowed(emailAddress, policy);
++        }
++        catch (err) {
++            const detail = err instanceof Error ? err.message : String(err);
++            console.error(`[email-agent-mcp] Ignoring shared mailbox "${emailAddress}": ${detail}`);
+             continue;
+         }
+         if (entry.access !== 'read-only') {
+             console.error(`[email-agent-mcp] Ignoring shared mailbox "${emailAddress}": only access "read-only" is supported`);
+             continue;
+         }
++        const via = String(entry.viaSignedInMailbox ?? '').trim().toLowerCase();
++        const own = new Set([...(ownAddresses ?? []), via].map(a => String(a ?? '').trim().toLowerCase()).filter(Boolean));
++        if (own.has(emailAddress)) {
++            console.error(`[email-agent-mcp] Ignoring shared mailbox "${emailAddress}": it is the signed-in mailbox; own mailboxes stay on /me and are not registered as read-only shared targets`);
++            continue;
++        }
+         out.push({
+             name: String(entry.name ?? emailAddress),
+             emailAddress,
+@@ -97,7 +251,7 @@
+     targetUser;
+     mailboxName;
+     refusedCount = 0;
+-    constructor(getToken, onAuthError, targetUser, mailboxName) {
++    constructor(getToken, onAuthError, targetUser, mailboxName, policy = getSharedTargetPolicy()) {
+         // Wrap token acquisition so a missing Mail.Read.Shared grant yields a clear error (never the token itself).
+         const wrappedGetToken = async () => {
+             try {
+@@ -110,12 +264,8 @@
+             }
+         };
+         super(wrappedGetToken, onAuthError);
+-        const normalized = String(targetUser).trim().toLowerCase();
+-        if (!SHARED_MAILBOX_READONLY_ALLOWLIST.includes(normalized)) {
+-            throw new Error(`Shared mailbox ${normalized} is not in the read-only allowlist`);
+-        }
+-        this.targetUser = normalized;
+-        this.mailboxName = mailboxName ?? normalized;
++        this.targetUser = assertSharedTargetAllowed(targetUser, policy);
++        this.mailboxName = mailboxName ?? this.targetUser;
+     }
+     refuse(method, url, why) {
+         this.refusedCount++;
+@@ -125,7 +275,8 @@
+         }
+         catch { /* keep raw */ }
+         logSharedMailboxGuard({ result: 'REFUSED', mailbox: this.mailboxName, method, path, why });
+-        throw new SharedMailboxWriteRefusedError(`${method} ${path} refused for read-only shared mailbox ${this.targetUser} (${why}); no request was sent to Graph`);
++        const Err = String(method).toUpperCase() === 'GET' ? SharedMailboxRequestRefusedError : SharedMailboxWriteRefusedError;
++        throw new Err(`${method} ${path} refused for read-only shared mailbox ${this.targetUser} (${why}); no request was sent to Graph`);
+     }
+     isAllowedUrl(url) {
+         let u;
+@@ -135,7 +286,9 @@
+         catch {
+             return false;
+         }
+-        if (u.protocol !== 'https:' || u.hostname !== 'graph.microsoft.com')
++        if (u.username !== '' || u.password !== '')
++            return false;
++        if (u.origin !== 'https://graph.microsoft.com')
+             return false;
+         let p;
+         try {
+@@ -165,8 +318,24 @@
+         if (!this.isAllowedUrl(fullUrl))
+             this.refuse('GET', fullUrl, 'URL outside the pinned shared mailbox');
+     }
+-    async get(url) { this.preflight(url); return super.get(url); }
+-    async getBytes(url) { this.preflight(url); return super.getBytes(url); }
++    async get(url) {
++        this.preflight(url);
++        try {
++            return await super.get(url);
++        }
++        catch (err) {
++            rethrowMailboxLevel404(err, this.targetUser);
++        }
++    }
++    async getBytes(url) {
++        this.preflight(url);
++        try {
++            return await super.getBytes(url);
++        }
++        catch (err) {
++            rethrowMailboxLevel404(err, this.targetUser);
++        }
++    }
+     // Refuse writes before a token is fetched.
+     async post(url) { this.refuse('POST', url, 'non-GET method'); }
+     async patch(url) { this.refuse('PATCH', url, 'non-GET method'); }
+diff -ru build-orig-ref/node_modules/@usejunior/email-core/dist/security/receive-allowlist.js build/node_modules/@usejunior/email-core/dist/security/receive-allowlist.js
+--- build-orig-ref/node_modules/@usejunior/email-core/dist/security/receive-allowlist.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/email-core/dist/security/receive-allowlist.js	2026-11-18 17:00:00.000000000 -0700
+@@ -12,6 +12,10 @@
+  * Default (no config): accept all.
+  */
+ export function isAllowedSender(email, allowlist) {
++    // TEAM BUILD (upstream #267): an allowlist file that exists but is malformed
++    // or unreadable blocks every sender instead of accepting all.
++    if (allowlist && allowlist.invalid)
++        return false;
+     // Default: accept all
+     if (!allowlist || allowlist.entries.length === 0) {
+         return true;
+@@ -39,15 +43,27 @@
+ export async function loadReceiveAllowlist(filePath) {
+     if (!filePath)
+         return undefined;
++    // TEAM BUILD (upstream #267): only a missing file means "no allowlist".
++    // Anything else that is not {"entries": [strings]} fails closed.
++    const invalid = (reason) => ({ entries: [], invalid: true, reason });
++    let content;
+     try {
+         const { readFile } = await import('node:fs/promises');
+-        const content = await readFile(filePath, 'utf-8');
+-        const data = JSON.parse(content);
+-        return { entries: data.entries ?? [] };
++        content = await readFile(filePath, 'utf-8');
++    }
++    catch (err) {
++        return err && err.code === 'ENOENT' ? undefined : invalid('Cannot read allowlist file');
++    }
++    let data;
++    try {
++        data = JSON.parse(content);
+     }
+     catch {
+-        return undefined;
++        return invalid('Malformed allowlist JSON');
+     }
++    if (!data || typeof data !== 'object' || !Array.isArray(data.entries) || !data.entries.every((e) => typeof e === 'string'))
++        return invalid('Allowlist must contain an entries array of strings');
++    return { entries: data.entries };
+ }
+ /**
+  * Get the receive allowlist file path from environment or config.
+diff -ru build-orig-ref/node_modules/@usejunior/email-core/dist/security/watched-allowlist.js build/node_modules/@usejunior/email-core/dist/security/watched-allowlist.js
+--- build-orig-ref/node_modules/@usejunior/email-core/dist/security/watched-allowlist.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/email-core/dist/security/watched-allowlist.js	2026-11-18 17:00:00.000000000 -0700
+@@ -78,7 +78,11 @@
+     async reload() {
+         try {
+             const newConfig = await this.loader(this.filePath);
+-            if (newConfig !== undefined) {
++            if (newConfig !== undefined && newConfig.invalid) {
++                // TEAM BUILD (upstream #267): an invalid reload keeps the current policy.
++                console.error(`[email-agent-mcp] Invalid allowlist at ${this.filePath}: ${newConfig.reason}. Keeping the current policy.`);
++            }
++            else if (newConfig !== undefined) {
+                 // Valid config loaded — update
+                 this._config = newConfig;
+                 console.error(`[email-agent-mcp] Allowlist reloaded: ${newConfig.entries.length} entries from ${this.filePath}`);
+diff -ru build-orig-ref/node_modules/@usejunior/email-mcp/dist/cli.js build/node_modules/@usejunior/email-mcp/dist/cli.js
+--- build-orig-ref/node_modules/@usejunior/email-mcp/dist/cli.js	2026-11-17 20:23:35.453751475 -0700
++++ build/node_modules/@usejunior/email-mcp/dist/cli.js	2026-11-18 17:00:00.000000000 -0700
+@@ -629,7 +629,11 @@
+     const allowlistPath = getReceiveAllowlistPath();
+     const receiveWatcher = new WatchedAllowlist(allowlistPath, loadReceiveAllowlist);
+     await receiveWatcher.start();
+-    if (!receiveWatcher.config) {
++    if (receiveWatcher.config && receiveWatcher.config.invalid) {
++        // TEAM BUILD (upstream #267): fail closed on a malformed or unreadable allowlist.
++        console.error(`[email-agent-mcp] WARNING: Invalid receive allowlist at ${allowlistPath} (${receiveWatcher.config.reason}) — blocking all senders until it is fixed`);
++    }
++    else if (!receiveWatcher.config) {
+         console.error('[email-agent-mcp] WARNING: No receive allowlist configured — accepting all senders');
+     }
+     // Get wake token: env var > config > undefined

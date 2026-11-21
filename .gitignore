@@ -1,0 +1,17 @@
+node_modules/
+dist/
+staging/
+scratch/
+scratch-prune/homes/
+**/homes/
+tokens/
+.IdentityService
+*.sha256
+live-*.sha256
+npm-debug.log*
+.npm-cache/
+vendor/
+# Saved test output (run-checks and suites write their own under scratch)
+tests/*.out
+# Build-time tenant config (see team-build.config.example.json)
+/team-build.config.json

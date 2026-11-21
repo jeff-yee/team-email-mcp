@@ -1,0 +1,138 @@
+diff -ruN a/node_modules/@usejunior/email-mcp/dist/server.js b/node_modules/@usejunior/email-mcp/dist/server.js
+--- a/node_modules/@usejunior/email-mcp/dist/server.js	2026-10-22 21:04:09.512197466 -0700
++++ b/node_modules/@usejunior/email-mcp/dist/server.js	2026-10-26 11:04:41.525197905 -0700
+@@ -350,7 +350,7 @@
+     const names = state.mailboxes.map(mailbox => mailbox.emailAddress ?? mailbox.name);
+     return names.length > 0 ? names.join(', ') : 'none';
+ }
+-function resolveMailboxContext(state, requestedMailbox) {
++function resolveMailboxContext(state, requestedMailbox, toolName) {
+     const connectedMailboxes = getConnectedMailboxes(state);
+     if (connectedMailboxes.length === 0) {
+         throw new Error(state.error ?? NO_MAILBOX_CONFIGURED_MESSAGE);
+@@ -362,9 +362,17 @@
+     if (!isConnectedMailbox(mailbox)) {
+         throw new Error(mailbox.error ?? `Mailbox "${requestedMailbox ?? mailbox.name}" is not connected`);
+     }
++    // LOCAL PATCH: read-only shared mailbox — refuse any non-read tool before it runs.
++    if (mailbox.readOnlyShared) {
++        if (!state.assertToolAllowedForSharedMailbox)
++            throw new Error(`SHARED_MAILBOX_READ_ONLY: guard not loaded for "${mailbox.name}"`);
++        state.assertToolAllowedForSharedMailbox(toolName ?? '(unknown)', mailbox.name);
++    }
+     return {
+         mailbox,
+-        allMailboxes: connectedMailboxes.map(connected => ({
++        // LOCAL PATCH: read-only shared mailboxes are hidden from allMailboxes so compose/reply
++        // "mailbox required" checks and all-mailbox fan-outs behave exactly as before.
++        allMailboxes: connectedMailboxes.filter(connected => !connected.readOnlyShared).map(connected => ({
+             name: connected.name,
+             emailAddress: connected.emailAddress,
+             provider: connected.provider,
+@@ -381,7 +389,7 @@
+  */
+ export async function initProvider(state) {
+     try {
+-        const [{ listConfiguredMailboxesWithMetadata, DelegatedAuthManager, RealGraphApiClient, GraphEmailProvider }, { listConfiguredGmailMailboxes, GmailAuthManager, GmailEmailProvider, GoogleapisGmailClient, formatGmailAuthError, },] = await Promise.all([
++        const [{ listConfiguredMailboxesWithMetadata, DelegatedAuthManager, RealGraphApiClient, GraphEmailProvider, ReadOnlySharedMailboxGraphClient, loadSharedMailboxConfig, assertToolAllowedForSharedMailbox, SHARED_MAILBOX_SCOPES }, { listConfiguredGmailMailboxes, GmailAuthManager, GmailEmailProvider, GoogleapisGmailClient, formatGmailAuthError, },] = await Promise.all([
+             import('@usejunior/provider-microsoft'),
+             import('@usejunior/provider-gmail'),
+         ]);
+@@ -397,6 +405,7 @@
+         }
+         const connectedMailboxes = [];
+         const failedMailboxes = [];
++        const microsoftAuthByName = new Map(); // LOCAL PATCH: for shared-mailbox entries
+         for (const metadata of microsoftMailboxes) {
+             const displayName = metadata.emailAddress ?? metadata.mailboxName;
+             try {
+@@ -404,6 +413,9 @@
+                 await auth.reconnect();
+                 const client = new RealGraphApiClient(() => auth.getAccessToken(), () => auth.tryReconnect());
+                 const provider = new GraphEmailProvider(client);
++                microsoftAuthByName.set(normalizeMailboxKey(metadata.mailboxName), auth); // LOCAL PATCH
++                if (metadata.emailAddress)
++                    microsoftAuthByName.set(normalizeMailboxKey(metadata.emailAddress), auth); // LOCAL PATCH
+                 const mailboxAuth = {
+                     getTokenHealthWarning: () => auth.getTokenHealthWarning(),
+                     tryReconnect: () => auth.tryReconnect(),
+@@ -490,7 +502,39 @@
+                 console.error(`[email-agent-mcp] Skipping Gmail mailbox "${displayName}": ${formatGmailAuthError(err, mailboxRef)}`);
+             }
+         }
++        // LOCAL PATCH: read-only shared mailboxes (never default; appended after own mailboxes).
++        const sharedConnected = [];
++        try {
++            state.assertToolAllowedForSharedMailbox = assertToolAllowedForSharedMailbox;
++            for (const shared of loadSharedMailboxConfig()) {
++                const ownerAuth = microsoftAuthByName.get(normalizeMailboxKey(shared.viaSignedInMailbox));
++                const base = {
++                    name: shared.name,
++                    emailAddress: shared.emailAddress,
++                    displayName: shared.emailAddress,
++                    providerType: 'microsoft',
++                    isDefault: false,
++                    readOnlyShared: true,
++                };
++                if (!ownerAuth) {
++                    failedMailboxes.push({ ...base, provider: null, auth: null, status: 'error', error: `Shared mailbox "${shared.name}": signed-in mailbox "${shared.viaSignedInMailbox}" is not connected` });
++                    continue;
++                }
++                const sharedClient = new ReadOnlySharedMailboxGraphClient(() => ownerAuth.getAccessTokenForScopes(SHARED_MAILBOX_SCOPES), () => ownerAuth.tryReconnect(), shared.emailAddress, shared.name);
++                sharedConnected.push({
++                    ...base,
++                    provider: new GraphEmailProvider(sharedClient, shared.emailAddress),
++                    auth: { getTokenHealthWarning: () => undefined, tryReconnect: () => ownerAuth.tryReconnect() },
++                    status: 'connected',
++                });
++                console.error(`[email-agent-mcp] Registered READ-ONLY shared mailbox "${shared.name}" (${shared.emailAddress}) via ${shared.viaSignedInMailbox}`);
++            }
++        }
++        catch (err) {
++            console.error(`[email-agent-mcp] Shared mailbox config error (ignored): ${err instanceof Error ? err.message : err}`);
++        }
+         if (connectedMailboxes.length > 0) {
++            connectedMailboxes.push(...sharedConnected); // LOCAL PATCH
+             connectedMailboxes[0].isDefault = true;
+             state.mailboxes = [...connectedMailboxes, ...failedMailboxes];
+             state.isDemo = false;
+@@ -557,7 +601,7 @@
+                     typeof input.mailbox === 'string'
+                     ? input.mailbox
+                     : undefined;
+-                const resolved = resolveMailboxContext(state, requestedMailbox);
++                const resolved = resolveMailboxContext(state, requestedMailbox, action.name);
+                 const deletePolicy = getDeletePolicy();
+                 const actionCtx = {
+                     provider: resolved.mailbox.provider,
+@@ -633,7 +677,7 @@
+                 if (!getDefaultMailbox(state))
+                     return demoListEmails();
+                 const inp = input;
+-                const { mailbox } = resolveMailboxContext(state, inp.mailbox);
++                const { mailbox } = resolveMailboxContext(state, inp.mailbox, 'list_emails');
+                 const messages = await mailbox.provider.listMessages({
+                     unread: inp.unread,
+                     limit: inp.limit ?? 25,
+@@ -695,7 +739,7 @@
+                 const inp = input;
+                 if (!getDefaultMailbox(state))
+                     return demoReadEmail(inp.id);
+-                const { mailbox } = resolveMailboxContext(state, inp.mailbox);
++                const { mailbox } = resolveMailboxContext(state, inp.mailbox, 'read_email');
+                 // Delegate to the canonical readEmailAction so MCP stays a thin adapter
+                 // (per AGENTS.md: actions are the single source of truth, transport layers
+                 // must not re-implement business logic).
+@@ -735,10 +779,10 @@
+                 if (!getDefaultMailbox(state))
+                     return { emails: [] };
+                 const inp = input;
+-                const resolved = inp.mailbox === null ? null : resolveMailboxContext(state, inp.mailbox);
++                const resolved = inp.mailbox === null ? null : resolveMailboxContext(state, inp.mailbox, 'search_emails');
+                 const results = resolved
+                     ? (await resolved.mailbox.provider.searchMessages(inp.query, undefined, inp.limit ?? 25, inp.offset)).map(result => ({ ...result, mailbox: resolved.mailbox.name }))
+-                    : (await Promise.all(getConnectedMailboxes(state).map(async (mailbox) => {
++                    : (await Promise.all(getConnectedMailboxes(state).filter(mailbox => !mailbox.readOnlyShared /* LOCAL PATCH: all-mailbox search stays own-mailboxes only */).map(async (mailbox) => {
+                         const mailboxResults = await mailbox.provider.searchMessages(inp.query, undefined);
+                         return mailboxResults.map(result => ({ ...result, mailbox: mailbox.name }));
+                     })))

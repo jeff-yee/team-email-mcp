@@ -1,0 +1,6 @@
+{
+  "tenantId": "<your Entra tenant id (GUID)>",
+  "clientId": "<the team app's Application (client) id (GUID)>",
+  "deniedClientIdPrefixes": ["<first 8 hex digits and the dash of a client id to refuse, e.g. 0123abcd->"],
+  "allowNoDeniedClients": false
+}

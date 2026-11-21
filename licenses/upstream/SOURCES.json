@@ -1,0 +1,15 @@
+{
+  "_about": "Upstream license files for bundled npm packages whose published tarball ships none. tools/license-notices.mjs uses these before falling back to the standard text of the declared license. Each file is a verbatim copy of the linked upstream file; sha256 is checked at build time.",
+  "packages": {
+    "email-agent-mcp": { "file": "UseJunior-email-agent-mcp.LICENSE", "source": "https://github.com/UseJunior/email-agent-mcp/blob/2e57572c18187dce404e7e48716927fc3770de94/LICENSE", "sha256": "cdc55b46fc691104543081ca4972dd9b391beb4ad3513827c5a5465163b7f3a8" },
+    "@usejunior/email-core": { "file": "UseJunior-email-agent-mcp.LICENSE", "source": "https://github.com/UseJunior/email-agent-mcp/blob/2e57572c18187dce404e7e48716927fc3770de94/LICENSE", "sha256": "cdc55b46fc691104543081ca4972dd9b391beb4ad3513827c5a5465163b7f3a8" },
+    "@usejunior/email-mcp": { "file": "UseJunior-email-agent-mcp.LICENSE", "source": "https://github.com/UseJunior/email-agent-mcp/blob/2e57572c18187dce404e7e48716927fc3770de94/LICENSE", "sha256": "cdc55b46fc691104543081ca4972dd9b391beb4ad3513827c5a5465163b7f3a8" },
+    "@usejunior/provider-microsoft": { "file": "UseJunior-email-agent-mcp.LICENSE", "source": "https://github.com/UseJunior/email-agent-mcp/blob/2e57572c18187dce404e7e48716927fc3770de94/LICENSE", "sha256": "cdc55b46fc691104543081ca4972dd9b391beb4ad3513827c5a5465163b7f3a8" },
+    "@usejunior/provider-gmail": { "file": "UseJunior-email-agent-mcp.LICENSE", "source": "https://github.com/UseJunior/email-agent-mcp/blob/2e57572c18187dce404e7e48716927fc3770de94/LICENSE", "sha256": "cdc55b46fc691104543081ca4972dd9b391beb4ad3513827c5a5465163b7f3a8" },
+    "boolbase": { "file": "fb55-boolbase.LICENSE", "source": "https://github.com/fb55/boolbase/blob/be0bcd8a4e917a0a5895e95b523fbbed05a64871/LICENSE", "sha256": "cdf4d87ae0a6c160227263bf4e39a0a10e30e89ae7256e0f7ac7bde0836552c6" }
+  },
+  "noUpstreamFile": {
+    "node-html-markdown": "MIT in package.json; github.com/crosstype/node-html-markdown has no license file, so the standard MIT text is used with the package author.",
+    "@azure/msal-node-runtime": "MIT in package.json; its source repository is not public, so the standard MIT text is used with the package author."
+  }
+}

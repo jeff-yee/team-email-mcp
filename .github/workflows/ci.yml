@@ -1,0 +1,105 @@
+# Offline CI for the team build: one Linux build of the universal package, then
+# install + refusal + tamper + offline suites on Windows, macOS and Linux.
+# No job signs in or calls Microsoft. The build job reaches the npm registry and
+# the hash-pinned keytar prebuild downloads only; test jobs run every node child
+# under tools/no-network.mjs.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+env:
+  TAG: email-agent-mcp-team-ci
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build-config refusal tests (missing tenant or client id refuses)
+        run: node tests/team-config-test.mjs
+      - name: Public export matches the manifest and refuses any difference
+        run: node tests/export-public-test.mjs
+      - name: Export this commit (fails on any difference from the manifest)
+        run: bash tools/export-public.sh --public-tree HEAD "$RUNNER_TEMP/public-export"
+      - name: Patched tree (npm ci --ignore-scripts + patches/, dummy test tenant)
+        env:
+          TEAM_BUILD_CONFIG: tests/fixtures/team-build.config.test.json
+        run: bash tools/make-build-tree.sh "$RUNNER_TEMP/tree"
+      - name: Build the universal package
+        run: |
+          umask 077
+          BUILD_DIR="$RUNNER_TEMP/tree" KEYTAR_PREBUILD_DIR="$RUNNER_TEMP/keytar" bash build.sh 20261118
+          cat "dist/$TAG.tgz.sha256"
+      - name: Reproducible build (clean vs hostile modes)
+        run: TMPDIR="$RUNNER_TEMP" KEYTAR_PREBUILD_DIR="$RUNNER_TEMP/keytar" KEYTAR_OFFLINE=1 bash tests/build-modes-test.sh "$RUNNER_TEMP/tree"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: team-package
+          path: |
+            dist/${{ env.TAG }}.tgz
+            dist/${{ env.TAG }}.tgz.sha256
+          if-no-files-found: error
+
+  test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: team-package
+          path: pkg
+      - name: Hash check (Linux, sha256sum -c)
+        if: runner.os == 'Linux'
+        working-directory: pkg
+        run: sha256sum -c "$TAG.tgz.sha256"
+      - name: Hash check (macOS, shasum -a 256 -c)
+        if: runner.os == 'macOS'
+        working-directory: pkg
+        run: shasum -a 256 -c "$TAG.tgz.sha256"
+      - name: Hash check (Windows, Get-FileHash)
+        if: runner.os == 'Windows'
+        working-directory: pkg
+        shell: pwsh
+        run: |
+          $want = (Get-Content "$env:TAG.tgz.sha256").Split(' ')[0]
+          $got = (Get-FileHash -Algorithm SHA256 "$env:TAG.tgz").Hash.ToLower()
+          if ($got -ne $want) { Write-Error "hash mismatch: $got vs $want"; exit 1 }
+          "OK $got"
+      - name: Unpack (tar -xzf)
+        if: runner.os != 'Windows'
+        working-directory: pkg
+        run: tar -xzf "$TAG.tgz"
+      - name: Unpack (Windows built-in tar.exe)
+        if: runner.os == 'Windows'
+        working-directory: pkg
+        shell: pwsh
+        run: '& "$env:SystemRoot\System32\tar.exe" -xzf "$env:TAG.tgz"'
+      - name: libsecret present for keytar (Linux)
+        if: runner.os == 'Linux'
+        run: ldconfig -p | grep -q libsecret-1.so.0 || { sudo apt-get update -q && sudo apt-get install -y -q libsecret-1-0; }
+      - name: Install, refusal, tamper and native-module tests (temp HOME)
+        run: node --import ./tools/no-network.mjs tests/install-test.mjs "pkg/${{ env.TAG }}"
+      - name: Offline suites against a fresh install
+        run: node --import ./tools/no-network.mjs tests/offline-suites.mjs "pkg/${{ env.TAG }}" ci
+      - name: verify-install against the stub MCP server
+        run: node --import ./tools/no-network.mjs tests/verify-install-test.mjs
+      - name: Build-config refusal tests
+        run: node --import ./tools/no-network.mjs tests/team-config-test.mjs

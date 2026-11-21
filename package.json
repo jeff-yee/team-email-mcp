@@ -1,0 +1,17 @@
+{
+  "license": "Apache-2.0",
+  "dependencies": {
+    "email-agent-mcp": "0.3.2"
+  },
+  "overrides": {
+    "@usejunior/email-core": "0.3.5",
+    "@usejunior/email-mcp": "0.3.5",
+    "@usejunior/provider-gmail": "0.3.5",
+    "@usejunior/provider-microsoft": "0.3.5"
+  },
+  "_npx": {
+    "packages": [
+      "email-agent-mcp@0.3.2"
+    ]
+  }
+}

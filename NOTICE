@@ -1,0 +1,29 @@
+team-email-mcp
+Copyright 2026 the team-email-mcp maintainers
+
+This product includes and modifies email-agent-mcp by UseJunior
+(https://github.com/UseJunior/email-agent-mcp), Copyright 2026 UseJunior,
+licensed under the Apache License, Version 2.0. The npm packages
+email-agent-mcp 0.3.2 and @usejunior/email-core, email-mcp,
+provider-microsoft and provider-gmail 0.3.5 are bundled in the release
+package.
+
+Modifications (patches/ and tools/prune-dir.sh in this repository). Each
+modified upstream file starts with a "LOCAL PATCH (team build)" notice
+(patches/patch-change-notices.diff), and the changed parts are marked
+"LOCAL PATCH" or "TEAM BUILD":
+- a draft-only scope profile as the default: no Mail.Send, no mailbox
+  settings, no delete or rules tools, and a request-level guard on the
+  signed-in user's own mailbox;
+- Microsoft only: @usejunior/provider-gmail's dist/index.js is replaced by
+  a stub (src/provider-gmail-stub.js) and its package.json loses the Google
+  dependencies (tools/prune-dir.sh);
+- read-only access to shared mailboxes;
+- an explicit team client id is required and the tenant is pinned at build
+  time; the send allowlist is always empty;
+- a pinned, hash-checked installer and launcher, and a cross-platform token
+  cache (keytar prebuilds, DPAPI on Windows);
+- @azure/msal-node 7.2.2.
+
+Other bundled third-party packages and their licenses are listed in
+THIRD-PARTY-NOTICES inside the release package.

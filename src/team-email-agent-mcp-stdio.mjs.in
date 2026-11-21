@@ -1,0 +1,81 @@
+// TEAM build of email-agent-mcp (draft profile: read + own-mailbox drafts,
+// no send/delete/rules/settings; shared mailboxes read-only if Exchange permits).
+// MCP stdio connector on Windows, macOS and Linux:
+//   command "node", args ["<absolute path to this file>"]
+// stdout = MCP JSON-RPC only; all other output goes to stderr.
+// FAILS CLOSED: refuses to start if any file in the install, its manifest or its
+// symlink list differs from what this launcher was built with.
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync, lstatSync, readlinkSync, existsSync, mkdirSync, chmodSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const TEAM_BUILD_TAG = '@@BUILD_TAG@@';
+const MANIFEST_SHA256 = '@@MANIFEST_SHA256@@';
+const LINKS_SHA256 = '@@LINKS_SHA256@@';
+const WIN = process.platform === 'win32';
+const die = (m) => { process.stderr.write(`team-email-agent-mcp-stdio: REFUSING to start: ${m}\n`); process.exit(1); };
+const sha = (buf) => createHash('sha256').update(buf).digest('hex');
+
+const HOME = homedir();
+if (!HOME) die('HOME is not set');
+if (WIN && !process.env.APPDATA) die('APPDATA is not set (the sign-in cache path needs it; pass it in the connector env)');
+const EAM_HOME = process.env.EMAIL_AGENT_MCP_HOME || join(HOME, '.email-agent-mcp');
+process.env.EMAIL_AGENT_MCP_HOME = EAM_HOME;
+const D = process.env.TEAM_EMAIL_MCP_INSTALL_DIR || join(EAM_HOME, 'patched-install');
+const SUMS = process.env.TEAM_EMAIL_MCP_MANIFEST || join(EAM_HOME, 'team-install.sha256');
+const LINKS = SUMS.replace(/\.sha256$/, '') + '.links';
+if (!existsSync(D) || !lstatSync(D).isDirectory()) die(`install dir ${D} missing (run install.mjs)`);
+if (!existsSync(SUMS) || !existsSync(LINKS)) die(`manifest ${SUMS} / ${LINKS} missing (run install.mjs)`);
+
+// 1. manifest files are the ones this launcher was built with
+const sumsBuf = readFileSync(SUMS), linksBuf = readFileSync(LINKS);
+if (sha(sumsBuf) !== MANIFEST_SHA256) die(`manifest ${SUMS} does not match build ${TEAM_BUILD_TAG}`);
+if (sha(linksBuf) !== LINKS_SHA256) die(`symlink list ${LINKS} does not match build ${TEAM_BUILD_TAG}`);
+
+// 2. every file hash matches (manifest lines: "<sha256>  ./relative/path", "/" separators)
+const want = new Map();
+for (const line of sumsBuf.toString('utf8').split('\n')) {
+  if (!line) continue;
+  const m = /^([0-9a-f]{64})  (\.\/.+)$/.exec(line);
+  if (!m || m[2].split('/').includes('..')) die(`manifest ${SUMS} has a malformed line`);
+  want.set(m[2], m[1]);
+}
+for (const [rel, h] of want) {
+  let buf;
+  try { buf = readFileSync(join(D, ...rel.split('/').slice(1))); } catch { die(`a file in ${D} was changed or removed (build ${TEAM_BUILD_TAG})`); }
+  if (sha(buf) !== h) die(`a file in ${D} was changed or removed (build ${TEAM_BUILD_TAG})`);
+}
+
+// 3. no added/removed files, no changed symlinks, no special files
+const files = [], links = [];
+(function walk(abs, rel) {
+  for (const name of readdirSync(abs)) {
+    const a = join(abs, name), r = `${rel}/${name}`, st = lstatSync(a);
+    if (st.isSymbolicLink()) links.push(`${r} -> ${readlinkSync(a)}`);
+    else if (st.isDirectory()) walk(a, r);
+    else if (st.isFile()) files.push(r);
+    else die(`unexpected special file in ${D}`);
+  }
+})(D, '.');
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+if (files.length !== want.size || files.some((f) => !want.has(f))) die(`files were added to ${D} (build ${TEAM_BUILD_TAG})`);
+const linksNow = links.sort(cmp).map((l) => l + '\n').join('');
+if (linksNow !== linksBuf.toString('utf8')) die(`a symlink in ${D} was changed (build ${TEAM_BUILD_TAG})`);
+
+// 4. safe defaults: draft profile unless explicitly observe; no delete policy; empty send allowlist
+const profile = process.env.EMAIL_AGENT_MCP_SCOPE_PROFILE || 'draft';
+if (profile !== 'draft' && profile !== 'observe') die('EMAIL_AGENT_MCP_SCOPE_PROFILE must be draft or observe in the team build');
+process.env.EMAIL_AGENT_MCP_SCOPE_PROFILE = profile;
+for (const k of ['AGENT_EMAIL_DELETE_ENABLED', 'AGENT_EMAIL_HARD_DELETE_ENABLED', 'AGENT_EMAIL_GMAIL_CLIENT_ID', 'AGENT_EMAIL_GMAIL_CLIENT_SECRET']) delete process.env[k];
+mkdirSync(EAM_HOME, { recursive: true, mode: 0o700 });
+if (!WIN) { try { chmodSync(EAM_HOME, 0o700); } catch { /* best effort, like the bash launcher */ } }
+const SA = join(EAM_HOME, 'send-allowlist.json');
+if (!existsSync(SA)) writeFileSync(SA, '{"entries": []}\n', { mode: 0o600 });
+
+// 5. run the CLI in this process (env above is already scrubbed)
+process.chdir(HOME);
+const entry = join(D, 'node_modules', 'email-agent-mcp', 'bin', 'email-agent-mcp.js');
+process.argv = [process.argv[0], entry, ...process.argv.slice(2)];
+await import(pathToFileURL(entry).href);

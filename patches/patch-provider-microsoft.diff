@@ -1,0 +1,222 @@
+diff -ruN a/node_modules/@usejunior/provider-microsoft/dist/auth.js b/node_modules/@usejunior/provider-microsoft/dist/auth.js
+--- a/node_modules/@usejunior/provider-microsoft/dist/auth.js	2026-10-22 21:04:09.520197312 -0700
++++ b/node_modules/@usejunior/provider-microsoft/dist/auth.js	2026-10-26 11:04:23.285150068 -0700
+@@ -209,6 +209,20 @@
+         await this.getAccessToken();
+     }
+     /**
++     * LOCAL PATCH (shared mailbox): get a token for an explicit scope list using the
++     * same signed-in account and MSAL cache. Does not touch this.scopes, the
++     * needs-reauth flag or the token-expiry bookkeeping of the owner mailbox.
++     */
++    async getAccessTokenForScopes(scopes) {
++        if (!this.credential) {
++            throw new Error('Not connected. Call connect() or reconnect() first.');
++        }
++        const token = await this.credential.getToken([...scopes]);
++        if (!token)
++            throw new Error('Failed to acquire token');
++        return token.token;
++    }
++    /**
+      * Attempt reconnect with single-flight guard — safe for concurrent callers.
+      * Returns true if reconnect succeeded, false if it failed.
+      */
+diff -ruN a/node_modules/@usejunior/provider-microsoft/dist/index.js b/node_modules/@usejunior/provider-microsoft/dist/index.js
+--- a/node_modules/@usejunior/provider-microsoft/dist/index.js	2026-10-22 21:04:09.536197000 -0700
++++ b/node_modules/@usejunior/provider-microsoft/dist/index.js	2026-10-26 11:04:23.285150068 -0700
+@@ -1,5 +1,7 @@
+ // @usejunior/provider-microsoft — Microsoft Graph API email provider
+ export { GraphEmailProvider, RealGraphApiClient, GraphApiError } from './email-graph-provider.js';
+ export { DelegatedAuthManager, ClientCredentialsAuthManager, listConfiguredMailboxes, listConfiguredMailboxesWithMetadata, loadMailboxMetadata, toFilesystemSafeKey, getConfigDir, GRAPH_SCOPES, GRAPH_SCOPES_BY_PROFILE, GRAPH_SCOPES_FULL_BY_PROFILE, isAuthError } from './auth.js';
++// LOCAL PATCH: read-only shared mailbox support
++export { ReadOnlySharedMailboxGraphClient, SharedMailboxWriteRefusedError, loadSharedMailboxConfig, assertToolAllowedForSharedMailbox, SHARED_MAILBOX_READONLY_ALLOWLIST, SHARED_MAILBOX_SCOPES, SHARED_MAILBOX_READONLY_TOOLS, getSharedMailboxConfigPath, getSharedMailboxGuardLogPath } from './shared-mailbox-readonly.js';
+ export { handleValidationToken, isDuplicateNotification, checkSubscriptionExists, healthCheckEndpoint, createInboxSubscription, } from './subscriptions.js';
+ //# sourceMappingURL=index.js.map
+\ No newline at end of file
+diff -ruN a/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js b/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js
+--- a/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js	1969-12-31 16:00:00.000000000 -0800
++++ b/node_modules/@usejunior/provider-microsoft/dist/shared-mailbox-readonly.js	2026-10-26 11:07:43.849676068 -0700
+@@ -0,0 +1,182 @@
++// LOCAL PATCH (2026-10-26) — read-only delegated access to a shared mailbox.
++// Not part of upstream email-agent-mcp. See the team-email-mcp docs/.
++//
++// A shared-mailbox entry reuses an already signed-in account's delegated token
++// (requested with Mail.Read.Shared only) and targets /users/<shared address>/...
++// Every Graph call for it goes through ReadOnlySharedMailboxGraphClient, which is
++// the single chokepoint: any non-GET method, or any URL outside the pinned
++// mailbox, is refused locally BEFORE a token is fetched or a request is sent.
++import { appendFileSync, readFileSync } from 'node:fs';
++import { join } from 'node:path';
++import { homedir } from 'node:os';
++import { RealGraphApiClient } from './email-graph-provider.js';
++/** Hard-coded: the only shared mailboxes this patch will ever open. */
++export const SHARED_MAILBOX_READONLY_ALLOWLIST = Object.freeze(['support@example.com']);
++/** Delegated scope requested for shared-mailbox tokens (owner@'s own scopes are untouched). */
++export const SHARED_MAILBOX_SCOPES = Object.freeze(['https://graph.microsoft.com/Mail.Read.Shared']);
++/** MCP tools that may target a read-only shared mailbox. Everything else is refused. */
++export const SHARED_MAILBOX_READONLY_TOOLS = Object.freeze(new Set([
++    'list_emails',
++    'read_email',
++    'search_emails',
++    'get_thread',
++    'list_folders',
++    'list_attachments',
++    'download_attachment',
++    'download_message',
++    'get_mailbox_status',
++    'list_mailboxes',
++]));
++function homeDir() {
++    return process.env['EMAIL_AGENT_MCP_HOME'] ?? join(homedir(), '.email-agent-mcp');
++}
++export function getSharedMailboxConfigPath() {
++    return join(homeDir(), 'shared-mailboxes.json');
++}
++export function getSharedMailboxGuardLogPath() {
++    return join(homeDir(), 'shared-mailbox-guard.log');
++}
++export class SharedMailboxWriteRefusedError extends Error {
++    constructor(detail) {
++        super(`SHARED_MAILBOX_READ_ONLY: ${detail}`);
++        this.name = 'SharedMailboxWriteRefusedError';
++        this.code = 'SHARED_MAILBOX_READ_ONLY';
++    }
++}
++/** Append a JSON line to the guard log (no tokens, no query strings). Never throws. */
++export function logSharedMailboxGuard(event) {
++    const line = JSON.stringify({ ts: new Date().toISOString(), ...event });
++    console.error(`[email-agent-mcp] shared-mailbox guard: ${line}`);
++    try {
++        appendFileSync(getSharedMailboxGuardLogPath(), line + '\n', { mode: 0o600 });
++    }
++    catch {
++        // logging is best-effort
++    }
++}
++/**
++ * Load ~/.email-agent-mcp/shared-mailboxes.json. Absent file => [] (no behaviour change).
++ * Format: {"mailboxes":[{"name":"support","emailAddress":"support@example.com",
++ *          "viaSignedInMailbox":"owner@example.com","access":"read-only"}]}
++ */
++export function loadSharedMailboxConfig() {
++    let raw;
++    try {
++        raw = readFileSync(getSharedMailboxConfigPath(), 'utf-8');
++    }
++    catch {
++        return [];
++    }
++    const parsed = JSON.parse(raw);
++    const out = [];
++    for (const entry of parsed?.mailboxes ?? []) {
++        const emailAddress = String(entry.emailAddress ?? '').trim().toLowerCase();
++        if (!SHARED_MAILBOX_READONLY_ALLOWLIST.includes(emailAddress)) {
++            console.error(`[email-agent-mcp] Ignoring shared mailbox "${emailAddress}": not in the hard-coded allowlist`);
++            continue;
++        }
++        if (entry.access !== 'read-only') {
++            console.error(`[email-agent-mcp] Ignoring shared mailbox "${emailAddress}": only access "read-only" is supported`);
++            continue;
++        }
++        out.push({
++            name: String(entry.name ?? emailAddress),
++            emailAddress,
++            viaSignedInMailbox: String(entry.viaSignedInMailbox ?? ''),
++        });
++    }
++    return out;
++}
++/**
++ * Graph client that can only GET inside one pinned shared mailbox.
++ * post/patch/delete are refused before a token is even requested; fetchWithAuthRetry
++ * (the single network chokepoint used by get/getBytes and by the parent class's
++ * write methods) re-checks method and URL so nothing else can slip through.
++ */
++export class ReadOnlySharedMailboxGraphClient extends RealGraphApiClient {
++    targetUser;
++    mailboxName;
++    refusedCount = 0;
++    constructor(getToken, onAuthError, targetUser, mailboxName) {
++        // Wrap token acquisition so a missing Mail.Read.Shared grant yields a clear error (never the token itself).
++        const wrappedGetToken = async () => {
++            try {
++                return await getToken();
++            }
++            catch (err) {
++                const name = err && err.name ? err.name : 'Error';
++                const msg = err instanceof Error ? err.message : String(err);
++                throw new Error(`SHARED_MAILBOX_TOKEN_UNAVAILABLE: could not get a delegated token with ${SHARED_MAILBOX_SCOPES.join(' ')} for shared mailbox "${mailboxName ?? targetUser}" (${name}: ${msg}). Most likely the Mail.Read.Shared delegated permission has not been granted/admin-consented yet for this app.`);
++            }
++        };
++        super(wrappedGetToken, onAuthError);
++        const normalized = String(targetUser).trim().toLowerCase();
++        if (!SHARED_MAILBOX_READONLY_ALLOWLIST.includes(normalized)) {
++            throw new Error(`Shared mailbox ${normalized} is not in the read-only allowlist`);
++        }
++        this.targetUser = normalized;
++        this.mailboxName = mailboxName ?? normalized;
++    }
++    refuse(method, url, why) {
++        this.refusedCount++;
++        let path = String(url);
++        try {
++            path = new URL(path, 'https://graph.microsoft.com/v1.0').pathname;
++        }
++        catch { /* keep raw */ }
++        logSharedMailboxGuard({ result: 'REFUSED', mailbox: this.mailboxName, method, path, why });
++        throw new SharedMailboxWriteRefusedError(`${method} ${path} refused for read-only shared mailbox ${this.targetUser} (${why}); no request was sent to Graph`);
++    }
++    isAllowedUrl(url) {
++        let u;
++        try {
++            u = new URL(url);
++        }
++        catch {
++            return false;
++        }
++        if (u.protocol !== 'https:' || u.hostname !== 'graph.microsoft.com')
++            return false;
++        let p;
++        try {
++            p = decodeURIComponent(u.pathname).toLowerCase();
++        }
++        catch {
++            return false;
++        }
++        if (p.includes('..'))
++            return false;
++        return p.startsWith(`/v1.0/users/${this.targetUser}/`)
++            || p.startsWith(`/v1.0/users('${this.targetUser}')/`);
++    }
++    async fetchWithAuthRetry(url, init) {
++        const method = String(init?.method ?? 'GET').toUpperCase();
++        if (method !== 'GET')
++            this.refuse(method, url, 'non-GET method');
++        if (init && init.body !== undefined)
++            this.refuse(method, url, 'request body on GET');
++        if (!this.isAllowedUrl(url))
++            this.refuse(method, url, 'URL outside the pinned shared mailbox');
++        return super.fetchWithAuthRetry(url, init);
++    }
++    // Check the URL before a token is fetched, then the parent re-checks in fetchWithAuthRetry.
++    preflight(url) {
++        const fullUrl = String(url).startsWith('http') ? String(url) : `https://graph.microsoft.com/v1.0${url}`;
++        if (!this.isAllowedUrl(fullUrl))
++            this.refuse('GET', fullUrl, 'URL outside the pinned shared mailbox');
++    }
++    async get(url) { this.preflight(url); return super.get(url); }
++    async getBytes(url) { this.preflight(url); return super.getBytes(url); }
++    // Refuse writes before a token is fetched.
++    async post(url) { this.refuse('POST', url, 'non-GET method'); }
++    async patch(url) { this.refuse('PATCH', url, 'non-GET method'); }
++    async delete(url) { this.refuse('DELETE', url, 'non-GET method'); }
++}
++/** Tool-level refusal, called from the server's single mailbox resolver. */
++export function assertToolAllowedForSharedMailbox(toolName, mailboxName) {
++    if (!SHARED_MAILBOX_READONLY_TOOLS.has(toolName)) {
++        logSharedMailboxGuard({ result: 'REFUSED', mailbox: mailboxName, tool: toolName, why: 'tool not allowed on read-only shared mailbox' });
++        throw new SharedMailboxWriteRefusedError(`tool "${toolName}" is not allowed on read-only shared mailbox "${mailboxName}"; allowed: ${[...SHARED_MAILBOX_READONLY_TOOLS].join(', ')}. No request was sent to Graph.`);
++    }
++}
++//# LOCAL PATCH END

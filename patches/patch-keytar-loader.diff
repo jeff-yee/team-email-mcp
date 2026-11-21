@@ -1,0 +1,9 @@
+--- a/node_modules/keytar/lib/keytar.js
++++ b/node_modules/keytar/lib/keytar.js
+@@ -1,4 +1,5 @@
+-var keytar = require('../build/Release/keytar.node')
++// Team build: load the N-API prebuild for this OS and CPU (linux-x64, darwin-x64, darwin-arm64, win32-x64).
++var keytar = require('../build/Release/' + process.platform + '-' + process.arch + '/keytar.node')
+ 
+ function checkRequired(val, name) {
+   if (!val || val.length <= 0) {

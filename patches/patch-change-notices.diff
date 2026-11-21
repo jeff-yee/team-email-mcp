@@ -1,0 +1,64 @@
+--- a/node_modules/@usejunior/email-core/dist/index.js
++++ b/node_modules/@usejunior/email-core/dist/index.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // @usejunior/email-core — Actions, content engine, security, and provider interfaces
+ export { EMAIL_ACTIONS } from './actions/registry.js';
+ export { EMAIL_SCOPE_PROFILES, EMAIL_SCOPE_PROFILE_ENV, TEAM_DEFAULT_SCOPE_PROFILE, DRAFT_ALLOWED_ACTIONS, filterActionsForProfile, getEmailScopeProfile, isActionAllowedForProfile, profileBlockedActionError, } from './scope-profile.js';
+--- a/node_modules/@usejunior/email-core/dist/scope-profile.js
++++ b/node_modules/@usejunior/email-core/dist/scope-profile.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // TEAM BUILD (2026-11-17): adds the 'draft' profile and makes it the
+ // default. 'full' (Mail.Send, MailboxSettings.ReadWrite, send/delete/rule tools)
+ // is refused in this build; only 'draft' and 'observe' can be selected.
+--- a/node_modules/@usejunior/email-core/dist/security/receive-allowlist.js
++++ b/node_modules/@usejunior/email-core/dist/security/receive-allowlist.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // Receive allowlist — controls which inbound emails trigger the watcher
+ // Default: accept all (wildcard *) — agent can READ any email
+ // Loaded at startup from config. No MCP tool to modify.
+--- a/node_modules/@usejunior/email-core/dist/security/watched-allowlist.js
++++ b/node_modules/@usejunior/email-core/dist/security/watched-allowlist.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // Hot-reloading file watcher for allowlist configuration files.
+ // Watches the PARENT directory for robustness with atomic writes,
+ // file creation, and deletion.
+--- a/node_modules/@usejunior/email-mcp/dist/cli.js
++++ b/node_modules/@usejunior/email-mcp/dist/cli.js
+@@ -1,4 +1,5 @@
+ #!/usr/bin/env node
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // CLI entry point — serve, watch, configure, setup subcommands + TTY-aware default
+ import { randomUUID } from 'node:crypto';
+ import { realpathSync } from 'node:fs';
+--- a/node_modules/@usejunior/email-mcp/dist/server.js
++++ b/node_modules/@usejunior/email-mcp/dist/server.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // MCP server — thin transport adapter mapping action registry to MCP tools
+ import { stat } from 'node:fs/promises';
+ import { createRequire } from 'node:module';
+--- a/node_modules/@usejunior/provider-microsoft/dist/auth.js
++++ b/node_modules/@usejunior/provider-microsoft/dist/auth.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // Microsoft Graph authentication — real MSAL device code flow + cache persistence
+ import { getEmailScopeProfile } from '@usejunior/email-core';
+ import { DeviceCodeCredential, ClientSecretCredential, useIdentityPlugin } from '@azure/identity';
+--- a/node_modules/@usejunior/provider-microsoft/dist/email-graph-provider.js
++++ b/node_modules/@usejunior/provider-microsoft/dist/email-graph-provider.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ import { AttachmentNotSupportedError, AttachmentNotFoundError, MessageNotFoundError, ProviderError, classifyHttpStatus, classifyTransportError, parseRetryAfter, SEND_STATUS_UNKNOWN, } from '@usejunior/email-core';
+ const BODY_SIZE_LIMIT = 3.5 * 1024 * 1024; // 3.5MB
+ const SUBJECT_MAX_LENGTH = 255;
+--- a/node_modules/@usejunior/provider-microsoft/dist/index.js
++++ b/node_modules/@usejunior/provider-microsoft/dist/index.js
+@@ -1,3 +1,4 @@
++// LOCAL PATCH (team build): this file was modified from upstream email-agent-mcp (Copyright 2026 UseJunior, Apache-2.0). See NOTICE.
+ // @usejunior/provider-microsoft — Microsoft Graph API email provider
+ export { GraphEmailProvider, RealGraphApiClient, GraphApiError } from './email-graph-provider.js';
+ export { DelegatedAuthManager, ClientCredentialsAuthManager, listConfiguredMailboxes, listConfiguredMailboxesWithMetadata, loadMailboxMetadata, toFilesystemSafeKey, getConfigDir, GRAPH_SCOPES, GRAPH_SCOPES_BY_PROFILE, GRAPH_SCOPES_FULL_BY_PROFILE, isAuthError } from './auth.js';

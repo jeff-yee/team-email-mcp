@@ -1,0 +1,16 @@
+# Regular files in the pruned install tree that must be 0755. All other
+# files are 0644; directories are 0755. Paths are relative to prune-root.
+# The 8 upstream executables in the 814ac251 install.tar (minus the old Linux-only
+# keytar.node) plus the 4 keytar N-API prebuilds that build.sh adds.
+node_modules/email-agent-mcp/bin/email-agent-mcp.js
+node_modules/he/bin/he
+node_modules/is-docker/cli.js
+node_modules/is-inside-container/cli.js
+node_modules/keytar/build/Release/darwin-arm64/keytar.node
+node_modules/keytar/build/Release/darwin-x64/keytar.node
+node_modules/keytar/build/Release/linux-x64/keytar.node
+node_modules/keytar/build/Release/win32-x64/keytar.node
+node_modules/marked/bin/marked.js
+node_modules/open/xdg-open
+node_modules/semver/bin/semver.js
+node_modules/sisteransi/package.json

@@ -1,0 +1,8 @@
+{
+  "build": "email-agent-mcp-team-20261117-anyshared-r2",
+  "base": {"email-agent-mcp": "0.3.2", "@usejunior/*": "0.3.5", "localPatches": ["shared-mailbox-readonly (2026-10-26)", "team-draft-profile (2026-11-17)"]},
+  "defaultScopeProfile": "draft",
+  "draftScopes": ["User.Read", "offline_access", "Mail.ReadWrite", "Mail.Read.Shared"],
+  "sharedTargetPolicy": "exchange",
+  "requiresExplicitClientId": true
+}
